@@ -1,0 +1,87 @@
+name: Build & Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux x86_64
+          - os: macos-latest
+            name: macOS ARM64
+          - os: windows-latest
+            name: Windows x86_64
+
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure & Build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          rm -rf ci-build
+          mkdir -p ci-build && cd ci-build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+      - name: Configure & Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if (Test-Path "ci-build") {
+            Remove-Item "ci-build" -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path ci-build | Out-Null
+          cd ci-build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release --parallel
+
+      - name: Run tune-probe (Unix)
+        if: runner.os != 'Windows'
+        run: ./ci-build/tune-probe
+        continue-on-error: true
+
+      - name: Run tune-probe (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if (Test-Path "ci-build\Release\tune-probe.exe") {
+            .\ci-build\Release\tune-probe.exe
+          } else {
+            .\ci-build\tune-probe.exe
+          }
+        continue-on-error: true
+
+      - name: Run torture-bench smoke (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p results
+          ./ci-build/torture-bench --only cpu_single -d 1 -o results/bench_ci_${{ matrix.os }}.json
+
+      - name: Run torture-bench smoke (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force -Path results
+          if (Test-Path "ci-build\Release\torture-bench.exe") {
+            .\ci-build\Release\torture-bench.exe --only cpu_single -d 1 -o results\bench_ci_${{ matrix.os }}.json
+          } else {
+            .\ci-build\torture-bench.exe --only cpu_single -d 1 -o results\bench_ci_${{ matrix.os }}.json
+          }
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ matrix.os }}
+          path: results/
+          if-no-files-found: warn

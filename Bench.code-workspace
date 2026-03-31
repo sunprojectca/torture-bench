@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"git.autofetch": false,
+		"git.openRepositoryInParentFolders": "never"
+	}
+}
