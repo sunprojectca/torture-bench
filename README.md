@@ -126,24 +126,81 @@ A "minor" verdict is normal on modern hardware — almost every CPU made after 2
 
 ### What the modules test
 
-| Module | What it measures | In plain English |
-|---|---|---|
-| cpu_single | Single-core integer + floating point | How fast is one core? |
-| cpu_parallel | All cores running simultaneously | How fast are all cores together? |
-| cpu_sustained | Performance over time (sampled every 0.2s) | Does it slow down when it gets hot? |
-| memory_bandwidth | STREAM triad (read+write throughput) | How fast can it move data? |
-| memory_latency | Pointer-chasing random access | How quickly can it find data in RAM? |
-| cache_thrash | L1/L2/L3 cache separately | How fast are the CPU's built-in caches? |
-| branch_chaos | Unpredictable if/else decisions | How well does it guess what code does next? |
-| hash_chain | SHA-256 cryptographic hashing | Raw crypto speed (detects SHA hardware) |
-| raytracer | 3D path tracing, no GPU | Pure CPU graphics rendering |
-| simd_dispatch | NEON/AVX2 vector math vs scalar | Does the CPU have wide math instructions? |
-| crypto_stress | AES + ChaCha20 encryption | Detects hardware crypto engines |
-| ml_matmul | Matrix multiply (FP32/INT8/BF16) | AI/ML inference speed |
-| lattice_geometry | Post-quantum crypto operations | Kyber/Dilithium lattice math |
-| linear_algebra | GEMM / LU / Cholesky decomposition | Dense math workloads |
-| exotic_chaos | Random mix of 10 different algorithms | Unpredictable mixed workload |
-| ips_micro | Instructions per second + latency | Raw instruction throughput |
+These 20 modules fall into a few categories: core throughput, memory and cache behavior, speculation and pipeline stress, and accelerator detection.
+
+| Module | Detailed description |
+|---|---|
+| cpu_single | Single-core integer and floating-point throughput on the shared CPU path. |
+| cpu_parallel | All-core throughput on the same worker path, used to measure scaling and scheduler behavior. |
+| cpu_sustained | Samples throughput every 0.2 seconds across the full run to expose thermal throttling or power limiting. |
+| memory_bandwidth | A STREAM-style triad that streams large arrays through read/write operations to measure bandwidth. |
+| memory_latency | A shuffled pointer-chasing ring that measures true RAM latency instead of cached throughput. |
+| cache_thrash | Separate L1, L2, and L3-sized phases that keep each cache level under pressure. |
+| branch_chaos | Deeply nested unpredictable branches and switch dispatch that hammer the branch predictor. |
+| hash_chain | A pure-C SHA-256 chain with no OpenSSL or hardware SHA helpers, so crypto acceleration is visible. |
+| raytracer | Scalar CPU path tracing against a fixed scene, with no GPU calls or SIMD shortcuts. |
+| simd_dispatch | Runs the same math scalar, with SIMD intrinsics, and with compiler auto-vectorization to compare paths. |
+| crypto_stress | Exercises AES-128, ChaCha20, RSA modexp, and ECDH-style scalar math to expose crypto acceleration. |
+| ml_matmul | Runs FP32 GEMM, INT8 matmul, BF16-style multiply, and attention-like work to detect matrix accelerators. |
+| lattice_geometry | Performs NTT, LWE-style matrix-vector work, Babai nearest-plane steps, and Gram-Schmidt orthogonalization. |
+| linear_algebra | Benchmarks dense GEMM, LU, Cholesky, power iteration, and conjugate gradient in pure C. |
+| exotic_chaos | Randomly mixes ten unrelated algorithms, including Mandelbrot, Game of Life, sort, BFS, and RC4. |
+| ips_micro | Measures integer IPS, float IPS, branch behavior, memory latency, TLB pressure, and store-load forwarding. |
+| pipeline_torture | Creates ILP bursts, execution-unit contention, and I-cache stress to hit fetch, decode, execute, and retire. |
+| ooo_execution | Compares 1, 4, and 16 independent chains, then adds ROB and load/store pressure to reveal OOO width. |
+| dependency_chain | Stacks serial integer and FP chains, diamond dependency graphs, memory dependencies, and register pressure. |
+| speculation_stress | Mixes predictable and unpredictable branches, BTB stress, deep recursion, and speculative loads. |
+
+### ASIC-Resistant Code
+
+In this repo, ASIC-resistant code means workload patterns that are hard to turn into a narrow special-purpose accelerator. They are not impossible to speed up, but they resist the kind of fixed-function hardware that loves one tiny, regular kernel and struggles with changing control flow, data dependencies, or memory access patterns.
+
+The most ASIC-resistant modules here are the ones with unpredictable branches, pointer chasing, dependency chains, mixed instruction mixes, or changing control flow:
+
+- `branch_chaos`
+- `memory_latency`
+- `pipeline_torture`
+- `ooo_execution`
+- `dependency_chain`
+- `speculation_stress`
+- `exotic_chaos`
+
+By contrast, modules like `hash_chain`, `crypto_stress`, `ml_matmul`, and `simd_dispatch` are intentionally more accelerator-friendly. That is useful too, because if a machine scores strangely high on those workloads, it can reveal hidden hardware help such as AES instructions, matrix engines, or wider SIMD units.
+
+Examples of ASIC-resistant patterns:
+
+```c
+/* Hard to prefetch or map to one fixed fast path */
+while (bench_now_sec() < deadline) {
+    idx = buf[idx];
+    idx = buf[idx];
+}
+```
+
+```c
+/* Hard to predict: control flow changes constantly */
+uint64_t v = xorshift64(&rng);
+if (v & 1) acc += v;
+if (v & 2) acc ^= v;
+switch ((v >> 13) & 7) {
+    case 0: acc += v * 3; break;
+    case 1: acc ^= v << 5; break;
+    case 2: acc -= v >> 2; break;
+    case 3: acc |= v * 7; break;
+    case 4: acc &= v + 1; break;
+    case 5: acc *= v | 1; break;
+    case 6: acc ^= acc >> 11; break;
+    case 7: acc += acc << 3; break;
+}
+```
+
+```c
+/* More accelerator-friendly: regular dense math */
+for (size_t i = 0; i < n; i++)
+    c[i] = a[i] + s * b[i];
+```
+
+The last pattern is not bad code; it is just easier to accelerate with SIMD, BLAS, matrix engines, or vendor helpers. This benchmark keeps both kinds of workloads on purpose so you can see the difference clearly.
 
 ### The composite score
 
